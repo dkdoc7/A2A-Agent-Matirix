@@ -9,7 +9,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, field_validator
 
-DATA_FILE = os.environ.get("AGENT_DATA_FILE", "/workspace/backend/data/agents.json")
+DATA_FILE = os.environ.get("AGENT_DATA_FILE", "data/agents.json")
 PING_INTERVAL_SECONDS = int(os.environ.get("PING_INTERVAL_SECONDS", "3"))
 
 

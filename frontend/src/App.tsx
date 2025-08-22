@@ -1,5 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Grid, GridColumn as Column } from '@progress/kendo-react-grid'
+import React, { useEffect, useRef, useState } from 'react'
 
 interface Agent {
 	id: string
@@ -16,9 +15,13 @@ export const App: React.FC = () => {
 	const wsRef = useRef<WebSocket | null>(null)
 
 	const loadAgents = async () => {
-		const resp = await fetch(`${BACKEND_BASE}/agents`)
-		const data = await resp.json()
-		setAgents(data.agents || [])
+		try {
+			const resp = await fetch(`${BACKEND_BASE}/agents`)
+			const data = await resp.json()
+			setAgents(data.agents || [])
+		} catch (error) {
+			console.error('Failed to load agents:', error)
+		}
 	}
 
 	useEffect(() => {
@@ -63,26 +66,42 @@ export const App: React.FC = () => {
 		}
 	}, [])
 
-	const statusCell = useMemo(() => (props: any) => {
-		const value = props.dataItem[props.field]
-		const color = value === 'active' ? '#2e7d32' : '#c62828'
-		return (
-			<td style={{ color, fontWeight: 600 }}>
-				{value}
-			</td>
-		)
-	}, [])
-
 	return (
 		<div style={{ padding: 24 }}>
 			<h2>Agent Station</h2>
-			<Grid style={{ height: '70vh' }} data={agents}>
-				<Column field="id" title="ID" width="200px" />
-				<Column field="name" title="Name" width="220px" />
-				<Column field="endpoint" title="Endpoint" width="320px" />
-				<Column field="status" title="Status" cell={statusCell as any} width="140px" />
-				<Column field="last_seen_at" title="Last Seen" />
-			</Grid>
+			<table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '20px' }}>
+				<thead>
+					<tr style={{ backgroundColor: '#f5f5f5' }}>
+						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>ID</th>
+						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Name</th>
+						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Endpoint</th>
+						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Status</th>
+						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Last Seen</th>
+					</tr>
+				</thead>
+				<tbody>
+					{agents.map((agent) => (
+						<tr key={agent.id} style={{ borderBottom: '1px solid #eee' }}>
+							<td style={{ padding: '12px' }}>{agent.id}</td>
+							<td style={{ padding: '12px' }}>{agent.name}</td>
+							<td style={{ padding: '12px' }}>{agent.endpoint}</td>
+							<td style={{ 
+								padding: '12px', 
+								color: agent.status === 'active' ? '#2e7d32' : '#c62828',
+								fontWeight: 600 
+							}}>
+								{agent.status}
+							</td>
+							<td style={{ padding: '12px' }}>{agent.last_seen_at || '-'}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+			{agents.length === 0 && (
+				<div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>
+					No agents found
+				</div>
+			)}
 		</div>
 	)
 }

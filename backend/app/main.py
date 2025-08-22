@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import httpx
@@ -58,18 +58,23 @@ class ConnectionManager:
         await websocket.accept()
         async with self._lock:
             self.active_connections.append(websocket)
+            print(f"WebSocket connected. Total connections: {len(self.active_connections)}")
 
     async def disconnect(self, websocket: WebSocket) -> None:
         async with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
+                print(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict) -> None:
+        print(f"Broadcasting message to {len(self.active_connections)} connections: {message}")
         stale: List[WebSocket] = []
         for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
-            except Exception:
+                print(f"Message sent successfully to connection")
+            except Exception as e:
+                print(f"Failed to send message to connection: {e}")
                 stale.append(connection)
         for s in stale:
             await self.disconnect(s)
@@ -108,11 +113,15 @@ class AgentStore:
             updated = False
             for idx, a in enumerate(agents):
                 if a["id"] == agent.id:
-                    agents[idx] = agent.model_dump()
+                    agent_dict = agent.model_dump()
+                    agent_dict['endpoint'] = str(agent_dict['endpoint'])
+                    agents[idx] = agent_dict
                     updated = True
                     break
             if not updated:
-                agents.append(agent.model_dump())
+                agent_dict = agent.model_dump()
+                agent_dict['endpoint'] = str(agent_dict['endpoint'])
+                agents.append(agent_dict)
             data["agents"] = agents
             self._write(data)
 
@@ -179,6 +188,13 @@ async def list_agents(status: Optional[str] = Query(None, description="Filter by
 async def register_agent(req: AgentRegisterRequest) -> Agent:
     agent = Agent(id=req.id, name=req.name, endpoint=req.endpoint, status=AgentStatus.INACTIVE)
     await store.upsert_agent(agent)
+    
+    # WebSocket을 통해 새로운 에이전트 등록을 브로드캐스트
+    await manager.broadcast({
+        "type": "agent_status_changed",
+        "agent": agent.model_dump(),
+    })
+    
     return agent
 
 
@@ -201,26 +217,31 @@ async def ping_loop() -> None:
                     try:
                         resp = await client.get(str(agent.endpoint).rstrip("/") + "/ping")
                         if resp.status_code == 200:
-                            now = datetime.utcnow().isoformat() + "Z"
+                            print("agent ping ok!")
+                            now = datetime.now(timezone.utc).isoformat()
                             updated = await store.set_status(agent.id, AgentStatus.ACTIVE, now)
                             if updated is not None:
+                                print("agent change")
                                 await manager.broadcast({
                                     "type": "agent_status_changed",
                                     "agent": updated.model_dump(),
                                 })
                         else:
                             updated = await store.set_status(agent.id, AgentStatus.INACTIVE, agent.last_seen_at)
+                            print("agent ping fail!")
                             if updated is not None:
+                                print("agent change")
                                 await manager.broadcast({
                                     "type": "agent_status_changed",
                                     "agent": updated.model_dump(),
                                 })
                     except Exception:
                         updated = await store.set_status(agent.id, AgentStatus.INACTIVE, agent.last_seen_at)
+                        print("agent ping fail!")
                         if updated is not None:
                             await manager.broadcast({
                                 "type": "agent_status_changed",
-                                "agent": updated.model_dump(),
+                                    "agent": updated.model_dump(),
                             })
             except Exception:
                 pass

@@ -22,7 +22,7 @@ A2A-Agent-Matrix/
 
 #### 1. Discovery Info
 ```
-GET /discovery
+GET /
 ```
 서비스의 프로토콜 정보와 사용 가능한 엔드포인트를 반환합니다.
 
@@ -33,9 +33,9 @@ GET /discovery
   "version": "1.0",
   "endpoints": {
     "list_agents": "/agents",
-    "register_agent": "/agents/register",
+    "register_agent": "/agent",
     "ws": "/ws",
-    "discovery": "/discovery"
+    "discovery": "/"
   }
 }
 ```
@@ -66,7 +66,7 @@ GET /agents
 
 #### 3. Agent 등록
 ```
-POST /agents/register
+POST /agent
 ```
 새로운 에이전트를 등록합니다.
 

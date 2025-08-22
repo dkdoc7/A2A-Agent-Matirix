@@ -154,16 +154,16 @@ async def startup_event() -> None:
     asyncio.create_task(ping_loop())
 
 
-@app.get("/discovery", response_model=DiscoveryInfo)
+@app.get("/", response_model=DiscoveryInfo)
 async def get_discovery() -> DiscoveryInfo:
     return DiscoveryInfo(
         protocol="A2A",
         version="1.0",
         endpoints={
             "list_agents": "/agents",
-            "register_agent": "/agents/register",
+            "register_agent": "/agent",
             "ws": "/ws",
-            "discovery": "/discovery",
+            "discovery": "/",
         },
     )
 
@@ -176,7 +176,7 @@ async def list_agents(status: Optional[str] = Query(None, description="Filter by
     return AgentListResponse(agents=agents)
 
 
-@app.post("/agents/register", response_model=Agent)
+@app.post("/agent", response_model=Agent)
 async def register_agent(req: AgentRegisterRequest) -> Agent:
     agent = Agent(id=req.id, name=req.name, endpoint=req.endpoint, status=AgentStatus.INACTIVE)
     await store.upsert_agent(agent)

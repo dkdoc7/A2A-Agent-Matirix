@@ -34,8 +34,7 @@ GET /
   "endpoints": {
     "list_agents": "/agents",
     "register_agent": "/agent",
-    "ws": "/ws",
-    "discovery": "/"
+    "ws": "/ws"
   }
 }
 ```

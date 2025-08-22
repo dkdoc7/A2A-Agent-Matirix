@@ -155,7 +155,7 @@ async def startup_event() -> None:
 
 
 @app.get("/", response_model=DiscoveryInfo)
-async def get_discovery() -> DiscoveryInfo:
+async def get_root_info() -> DiscoveryInfo:
     return DiscoveryInfo(
         protocol="A2A",
         version="1.0",
@@ -163,7 +163,6 @@ async def get_discovery() -> DiscoveryInfo:
             "list_agents": "/agents",
             "register_agent": "/agent",
             "ws": "/ws",
-            "discovery": "/",
         },
     )
 

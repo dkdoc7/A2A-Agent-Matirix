@@ -86,8 +86,11 @@ export const App: React.FC = () => {
 				const msg: WebSocketMessage = JSON.parse(event.data)
 				console.log('WebSocket message received:', msg)
 				
-				if (msg.type === 'agent_status_changed' && msg.agent) {
-					updateAgent(msg.agent)
+				if (msg.type === 'agent_status_changed') {
+					if(msg.agent)
+					{
+						updateAgent(msg.agent)
+					}
 				}
 			} catch (e) {
 				console.error('Failed to parse WebSocket message:', e, 'Raw data:', event.data)

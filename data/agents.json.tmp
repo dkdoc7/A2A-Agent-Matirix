@@ -1,0 +1,6 @@
+{
+  "agents": [
+    {
+      "id": "text-analyzer",
+      "name": "Text Analyzer",
+      "endpoint": 

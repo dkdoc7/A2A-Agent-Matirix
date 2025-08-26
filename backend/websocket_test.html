@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 테스트</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .message { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; margin: 5px 0; border-radius: 3px; }
+        button { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; }
+        .connect { background-color: #28a745; color: white; }
+        .disconnect { background-color: #dc3545; color: white; }
+        .test { background-color: #007bff; color: white; }
+        #messageLog { max-height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 WebSocket 연결 테스트</h1>
+        
+        <div id="status" class="status disconnected">
+            연결 상태: 연결 안됨
+        </div>
+        
+        <div>
+            <button id="connectBtn" class="connect" onclick="connect()">연결</button>
+            <button id="disconnectBtn" class="disconnect" onclick="disconnect()" disabled>연결 해제</button>
+            <button id="testBtn" class="test" onclick="sendTestMessage()" disabled>테스트 메시지 전송</button>
+        </div>
+        
+        <div>
+            <h3>연결 정보</h3>
+            <p>서버: <span id="serverInfo">ws://localhost:8000/ws</span></p>
+            <p>활성 연결 수: <span id="connectionCount">0</span></p>
+        </div>
+        
+        <div>
+            <h3>📨 메시지 로그</h3>
+            <div id="messageLog"></div>
+        </div>
+        
+        <div>
+            <h3>🔍 디버그 정보</h3>
+            <button onclick="checkWebSocketStatus()">WebSocket 상태 확인</button>
+            <button onclick="sendDebugBroadcast()">테스트 브로드캐스트</button>
+            <button onclick="checkConnections()">연결 상세 정보</button>
+            <div id="debugInfo"></div>
+        </div>
+        
+        <div>
+            <h3>📤 직접 메시지 전송</h3>
+            <input type="number" id="connectionId" placeholder="연결 ID" style="width: 100px; margin: 5px;">
+            <input type="text" id="directMessage" placeholder="메시지 내용" style="width: 200px; margin: 5px;">
+            <button onclick="sendDirectMessage()">직접 전송</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('messageLog');
+            const timestamp = new Date().toLocaleTimeString();
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            logDiv.appendChild(messageDiv);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            const statusDiv = document.getElementById('status');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const testBtn = document.getElementById('testBtn');
+            
+            if (connected) {
+                statusDiv.className = 'status connected';
+                statusDiv.textContent = '연결 상태: 연결됨';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                testBtn.disabled = false;
+            } else {
+                statusDiv.className = 'status disconnected';
+                statusDiv.textContent = '연결 상태: 연결 안됨';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                testBtn.disabled = true;
+            }
+        }
+
+        function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('이미 연결되어 있습니다.', 'warning');
+                return;
+            }
+
+            try {
+                ws = new WebSocket('ws://localhost:8000/ws');
+                
+                ws.onopen = function(event) {
+                    log('✅ WebSocket 연결 성공!', 'success');
+                    updateStatus(true);
+                    reconnectAttempts = 0;
+                };
+                
+                ws.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        log(`📨 수신: ${JSON.stringify(data, null, 2)}`, 'success');
+                        
+                        // 연결 확인 메시지 처리
+                        if (data.type === 'connection_established') {
+                            log('🔗 서버에서 연결 확인 메시지를 받았습니다.', 'success');
+                        }
+                        
+                        // 에코 메시지 처리
+                        if (data.type === 'echo') {
+                            log('🔄 에코 응답을 받았습니다.', 'info');
+                        }
+                        
+                        // 에이전트 상태 변경 메시지 처리
+                        if (data.type === 'agent_status_changed') {
+                            log(`🤖 에이전트 상태 변경: ${data.agent.id} -> ${data.agent.status}`, 'info');
+                        }
+                        
+                    } catch (e) {
+                        log(`❌ 메시지 파싱 오류: ${e.message}`, 'error');
+                        log(`원본 데이터: ${event.data}`, 'error');
+                    }
+                };
+                
+                ws.onclose = function(event) {
+                    log(`❌ WebSocket 연결 종료: ${event.code} - ${event.reason}`, 'error');
+                    updateStatus(false);
+                    
+                    // 자동 재연결 시도
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        reconnectAttempts++;
+                        log(`🔄 재연결 시도 ${reconnectAttempts}/${maxReconnectAttempts}...`, 'warning');
+                        setTimeout(connect, 2000);
+                    } else {
+                        log('❌ 최대 재연결 시도 횟수 초과', 'error');
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    log(`❌ WebSocket 오류: ${error}`, 'error');
+                };
+                
+            } catch (error) {
+                log(`❌ 연결 오류: ${error.message}`, 'error');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                log('🔌 연결을 수동으로 종료했습니다.', 'info');
+            }
+        }
+
+        function sendTestMessage() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = `테스트 메시지 ${Date.now()}`;
+                ws.send(message);
+                log(`📤 전송: ${message}`, 'info');
+            } else {
+                log('❌ WebSocket이 연결되지 않았습니다.', 'error');
+            }
+        }
+
+        async function checkWebSocketStatus() {
+            try {
+                const response = await fetch('http://localhost:8000/debug/websocket');
+                const data = await response.json();
+                
+                document.getElementById('connectionCount').textContent = data.active_connections;
+                
+                const debugInfo = document.getElementById('debugInfo');
+                debugInfo.innerHTML = `
+                    <h4>WebSocket 상태:</h4>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+                
+                log(`🔍 WebSocket 상태 확인: ${data.active_connections}개 연결`, 'info');
+            } catch (error) {
+                log(`❌ 상태 확인 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendDebugBroadcast() {
+            try {
+                const response = await fetch('http://localhost:8000/debug/broadcast', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: `테스트 브로드캐스트 ${Date.now()}`,
+                        from: '웹 테스트 페이지'
+                    })
+                });
+                
+                const data = await response.json();
+                log(`📢 디버그 브로드캐스트 전송: ${data.message}`, 'info');
+            } catch (error) {
+                log(`❌ 브로드캐스트 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function checkConnections() {
+            try {
+                const response = await fetch('http://localhost:8000/debug/connections');
+                const data = await response.json();
+                
+                const debugInfo = document.getElementById('debugInfo');
+                debugInfo.innerHTML = `
+                    <h4>연결 상세 정보:</h4>
+                    <p>총 연결 수: ${data.total_connections}</p>
+                    <pre>${JSON.stringify(data.connections, null, 2)}</pre>
+                `;
+                
+                log(`🔍 연결 상세 정보 확인: ${data.total_connections}개 연결`, 'info');
+            } catch (error) {
+                log(`❌ 연결 상세 정보 오류: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendDirectMessage() {
+            const connectionId = document.getElementById('connectionId').value;
+            const message = document.getElementById('directMessage').value;
+
+            if (!connectionId || !message) {
+                log('❌ 연결 ID와 메시지를 모두 입력해주세요.', 'warning');
+                return;
+            }
+
+            try {
+                const response = await fetch('http://localhost:8000/debug/send_direct', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        connection_id: parseInt(connectionId),
+                        message: {
+                            text: message,
+                            from: '웹 테스트 페이지'
+                        }
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    log(`📤 직접 메시지 전송 성공: ${data.message}`, 'success');
+                } else {
+                    log(`❌ 직접 메시지 전송 실패: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                log(`❌ 직접 메시지 전송 오류: ${error.message}`, 'error');
+            }
+        }
+
+        // 페이지 로드 시 자동 연결
+        window.onload = function() {
+            log('🚀 페이지 로드됨. WebSocket 연결을 시도합니다...', 'info');
+            connect();
+        };
+    </script>
+</body>
+</html>

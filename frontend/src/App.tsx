@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 
 interface Agent {
 	id: string
@@ -17,6 +17,7 @@ const BACKEND_BASE = (import.meta.env.VITE_BACKEND_BASE as string) || 'http://lo
 
 export const App: React.FC = () => {
 	const [agents, setAgents] = useState<Agent[]>([])
+	const [selectedIds, setSelectedIds] = useState<string[]>([])
 	const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
 	const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 	const wsRef = useRef<WebSocket | null>(null)
@@ -154,6 +155,29 @@ export const App: React.FC = () => {
 		loadAgents()
 	}
 
+	const toggleSelect = (agentId: string, checked: boolean) => {
+		setSelectedIds((prev) => {
+			if (checked) {
+				if (prev.includes(agentId)) return prev
+				return [...prev, agentId]
+			} else {
+				return prev.filter((id) => id !== agentId)
+			}
+		})
+	}
+
+	const selectedAgents = useMemo(() => {
+		const idSet = new Set(selectedIds)
+		return agents.filter((a) => idSet.has(a.id))
+	}, [agents, selectedIds])
+
+	const handleSniff = () => {
+		if (selectedIds.length < 2) return
+		const hostId = selectedIds[0]
+		const url = `${window.location.origin}/?sniff=1&agents=${encodeURIComponent(selectedIds.join(','))}&host=${encodeURIComponent(hostId)}`
+		window.open(url, '_blank', 'noopener')
+	}
+
 	return (
 		<div style={{ padding: 24 }}>
 			<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
@@ -171,6 +195,21 @@ export const App: React.FC = () => {
 						}}
 					>
 						🔄 Refresh
+					</button>
+					<button 
+						onClick={handleSniff}
+						disabled={selectedIds.length < 2}
+						style={{
+							padding: '8px 16px',
+							backgroundColor: selectedIds.length < 2 ? '#90a4ae' : '#6a1b9a',
+							color: 'white',
+							border: 'none',
+							borderRadius: '4px',
+							cursor: selectedIds.length < 2 ? 'not-allowed' : 'pointer'
+						}}
+						title={selectedIds.length < 2 ? '두 명 이상 선택하세요' : '선택한 에이전트 스니핑'}
+					>
+						🕵️ Sniff ({selectedIds.length})
 					</button>
 					<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
 						<div style={{
@@ -198,6 +237,7 @@ export const App: React.FC = () => {
 			<table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '20px' }}>
 				<thead>
 					<tr style={{ backgroundColor: '#f5f5f5' }}>
+						<th style={{ padding: '12px', textAlign: 'center', borderBottom: '1px solid #ddd', width: '60px' }}>Select</th>
 						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Status</th>
 						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>ID</th>
 						<th style={{ padding: '12px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Name</th>
@@ -209,6 +249,14 @@ export const App: React.FC = () => {
 				<tbody>
 					{agents.map((agent) => (
 						<tr key={agent.id} style={{ borderBottom: '1px solid #eee' }}>
+							<td style={{ padding: '12px', textAlign: 'center' }}>
+								<input 
+									type="checkbox" 
+									checked={selectedIds.includes(agent.id)} 
+									onChange={(e) => toggleSelect(agent.id, e.target.checked)}
+									title={selectedIds.length === 0 ? '처음 선택된 에이전트가 방장(오른쪽)' : ''}
+								/>
+							</td>
 							<td style={{ padding: '12px', textAlign: 'center' }}>
 								<span style={{ fontSize: '16px' }}>{getStatusIcon(agent.status)}</span>
 							</td>
@@ -229,6 +277,12 @@ export const App: React.FC = () => {
 					))}
 				</tbody>
 			</table>
+
+			{selectedAgents.length > 0 && (
+				<div style={{ marginTop: '12px', color: '#555', fontSize: 14 }}>
+					선택됨: {selectedAgents.map(a => a.name || a.id).join(', ')} {selectedIds.length > 0 && `(방장: ${selectedAgents.find(a=>a.id===selectedIds[0])?.name || selectedIds[0]})`}
+				</div>
+			)}
 			
 			{agents.length === 0 && (
 				<div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>

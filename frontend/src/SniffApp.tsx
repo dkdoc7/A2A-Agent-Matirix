@@ -21,6 +21,7 @@ export const SniffApp: React.FC = () => {
 	const params = new URLSearchParams(window.location.search)
 	const agentIdsParam = params.get('agents') || ''
 	const hostId = params.get('host') || ''
+	const sid = params.get('sid') || ''
 	const agentIds = useMemo(() => agentIdsParam.split(',').filter(Boolean), [agentIdsParam])
 
 	const [agentsMap, setAgentsMap] = useState<Record<string, AgentInfo>>({})
@@ -28,9 +29,49 @@ export const SniffApp: React.FC = () => {
 	const [connected, setConnected] = useState<'connecting' | 'connected' | 'error'>('connecting')
 	const wsRef = useRef<WebSocket | null>(null)
 	const listEndRef = useRef<HTMLDivElement | null>(null)
-	const chainIdRef = useRef(0)
-	const timeoutsRef = useRef<number[]>([])
-	const firstStepScheduledRef = useRef(false)
+	const bcRef = useRef<BroadcastChannel | null>(null)
+	const processedMessagesRef = useRef<Set<string>>(new Set())
+
+	const normalizeId = (v: string): string => {
+		try {
+			return decodeURIComponent(String(v ?? '')).trim()
+		} catch {
+			return String(v ?? '').trim()
+		}
+	}
+
+	const appendEvent = useCallback((e: Omit<ChatEvent, 'timestamp'>) => {
+		const withTs = { ...e, timestamp: Date.now() }
+		console.log('[Sniff] appendEvent', withTs)
+		setEvents((prev) => [...prev, withTs])
+		setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 0)
+	}, [])
+
+	const handleIncomingChat = useCallback((payload: any) => {
+		if (!payload || payload.type !== 'chat_message') return
+		const rawSender = String(payload.sender || '')
+		const message = String(payload.message ?? '')
+		const timestamp = payload.timestamp || Date.now()
+		
+		// 중복 메시지 방지: sender + message + timestamp 조합으로 고유 키 생성
+		const messageKey = `${rawSender}-${message}-${timestamp}`
+		if (processedMessagesRef.current.has(messageKey)) {
+			console.log('[Sniff] Duplicate message ignored', messageKey)
+			return
+		}
+		processedMessagesRef.current.add(messageKey)
+		
+		if (!rawSender) return
+		// 참여자 필터링: host 또는 peers에 포함된 sender만 표시
+		const isParticipant = rawSender === hostId || agentIds.includes(rawSender)
+		if (!isParticipant) {
+			console.log('[Sniff] Message ignored - sender not in participants', { rawSender, hostId, agentIds })
+			return
+		}
+		const isHost = normalizeId(rawSender) === normalizeId(hostId)
+		console.log('[Sniff] handleIncomingChat', { rawSender, hostId, isHost, message })
+		appendEvent({ role: isHost ? 'host' : 'peer', senderId: rawSender, direction: 'in', text: message })
+	}, [hostId, agentIds, appendEvent])
 
 	useEffect(() => {
 		// 에이전트 메타 정보 로드 (이름 표시용)
@@ -51,17 +92,63 @@ export const SniffApp: React.FC = () => {
 	}, [])
 
 	useEffect(() => {
+		// 히스토리 로딩
+		const loadHistory = async () => {
+			if (!sid) return
+			try {
+				const resp = await fetch(`${BACKEND_BASE}/chat/${encodeURIComponent(sid)}`)
+				const data = await resp.json()
+				if (Array.isArray(data.messages)) {
+					const mapped: ChatEvent[] = data.messages.map((m: any) => {
+						const isHost = normalizeId(m.sender) === normalizeId(hostId)
+						console.log('[Sniff] loadHistory', { sender: m.sender, hostId, isHost, message: m.message })
+						return {
+							role: isHost ? 'host' : (m.sender === 'system' ? 'system' : 'peer'),
+							senderId: m.sender,
+							direction: 'in',
+							text: m.message,
+							timestamp: Date.parse(m.timestamp) || Date.now(),
+						}
+					})
+					setEvents(mapped)
+				}
+			} catch (e) {
+				console.log('[Sniff] failed to load history', e)
+			}
+		}
+		loadHistory()
+	}, [sid, hostId])
+
+	useEffect(() => {
+		// BroadcastChannel 구독: App 또는 다른 창에서 전달된 채팅 이벤트 처리
+		bcRef.current = new BroadcastChannel('agentmatrix-chat')
+		const bc = bcRef.current
+		bc.onmessage = (ev) => {
+			const data = ev.data
+			const payload = data && typeof data === 'object' && 'payload' in data ? (data as any).payload : data
+			console.log('[Sniff] BC message', payload)
+			handleIncomingChat(payload)
+		}
+		return () => {
+			try { bc.close() } catch {}
+			bcRef.current = null
+		}
+	}, [handleIncomingChat])
+
+	useEffect(() => {
 		const wsUrl = BACKEND_BASE.replace('http', 'ws') + '/ws'
 		const ws = new WebSocket(wsUrl)
 		wsRef.current = ws
 		setConnected('connecting')
 
-		ws.onopen = () => setConnected('connected')
-		ws.onerror = () => setConnected('error')
-		ws.onclose = () => setConnected('error')
+		ws.onopen = () => { console.log('[Sniff] WS open', { sid, hostId, agentIds }); setConnected('connected') }
+		ws.onerror = (e) => { console.log('[Sniff] WS error', e); setConnected('error') }
+		ws.onclose = (e) => { console.log('[Sniff] WS close', e); setConnected('error') }
 		ws.onmessage = (ev) => {
+			console.log('[Sniff] WS message raw', ev.data)
 			try {
 				const msg = JSON.parse(ev.data)
+				console.log('[Sniff] WS message parsed', msg)
 				// 데모: 백엔드 브로드캐스트/에코를 채팅 이벤트로 매핑
 				if (msg.type === 'agent_status_changed') {
 					const a = msg.agent
@@ -77,57 +164,21 @@ export const SniffApp: React.FC = () => {
 				if (msg.type === 'debug_message') {
 					appendEvent({ role: 'system', senderId: 'system', direction: 'in', text: JSON.stringify(msg.content) })
 				}
+				if (msg.type === 'chat_message') {
+					// WS로 직접 수신한 경우에도 처리 및 재전송 (App 미존재 시 대비)
+					handleIncomingChat(msg)
+					try {
+						if (!bcRef.current) bcRef.current = new BroadcastChannel('agentmatrix-chat')
+						bcRef.current.postMessage({ source: 'sniff', payload: msg })
+						console.log('[Sniff] Rebroadcasted chat_message via BroadcastChannel', msg)
+					} catch {}
+				}
 			} catch {}
 		}
 
 		return () => ws.close()
-	}, [agentIdsParam, hostId])
+	}, [agentIdsParam, hostId, sid, agentIds, appendEvent])
 
-	const appendEvent = useCallback((e: Omit<ChatEvent, 'timestamp'>) => {
-		setEvents((prev) => [...prev, { ...e, timestamp: Date.now() }])
-		setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 0)
-	}, [])
-
-	// 초기 예제 대화 4개를 2초 간격으로 순차 표시 (StrictMode 안전, 첫 메시지 중복 방지)
-	useEffect(() => {
-		const safeHostId = hostId || 'host-1'
-		const peersList = agentIds.filter((id) => id !== safeHostId)
-		const samplePeer = peersList[0] || 'peer-1'
-		const steps: Omit<ChatEvent, 'timestamp'>[] = [
-			{ role: 'host', senderId: safeHostId, direction: 'out', text: '안녕! 스니핑 테스트를 시작할게.' },
-			{ role: 'peer', senderId: samplePeer, direction: 'in', text: '네, 메시지 잘 수신됩니다.' },
-			{ role: 'host', senderId: safeHostId, direction: 'out', text: '현재 상태 보고 부탁해.' },
-			{ role: 'peer', senderId: samplePeer, direction: 'in', text: '모듈 정상 작동 중입니다.' },
-		]
-
-		// 기존 타이머 모두 해제
-		timeoutsRef.current.forEach((t) => clearTimeout(t))
-		timeoutsRef.current = []
-
-		// 새로운 체인 ID 발급 (이전 예약 무효화)
-		const myChainId = chainIdRef.current + 1
-		chainIdRef.current = myChainId
-
-		// StrictMode로 인한 이펙트 이중 실행에서 첫 메시지 중복 방지
-		const startIndex = firstStepScheduledRef.current ? 1 : 0
-		firstStepScheduledRef.current = true
-
-		steps.forEach((evt, idx) => {
-			if (idx < startIndex) return
-			const tid = window.setTimeout(() => {
-				if (chainIdRef.current !== myChainId) return
-				appendEvent(evt)
-			}, (idx - startIndex) * 2000)
-			timeoutsRef.current.push(tid)
-		})
-
-		return () => {
-			// 예약 취소 및 체인 무효화
-			timeoutsRef.current.forEach((t) => clearTimeout(t))
-			timeoutsRef.current = []
-			chainIdRef.current += 1
-		}
-	}, [agentIdsParam, hostId, agentIds, appendEvent])
 
 	const hostName = agentsMap[hostId]?.name || hostId
 	const peers = agentIds.filter((id) => id !== hostId)
@@ -143,6 +194,27 @@ export const SniffApp: React.FC = () => {
 	return (
 		<div style={{ display: 'flex', height: '100vh', width: '640px', margin: '0 auto', boxSizing: 'border-box' }}>
 			<div style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column' }}>
+				{/* 방 제목 + 수정 버튼 */}
+				<div style={{ marginBottom: 16, padding: '12px 16px', backgroundColor: '#f5f5f5', borderRadius: 8, border: '1px solid #e0e0e0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+					<h2 style={{ margin: 0, fontSize: '18px', color: '#333', textAlign: 'center', flex: 1 }}>
+						{sid || 'Unknown Room'}
+					</h2>
+					<button
+						style={{ padding: '6px 10px', border: '1px solid #ccc', borderRadius: 6, background: '#fff', cursor: 'pointer' }}
+						onClick={() => {
+							const input = window.prompt('세션 ID를 입력하세요(sid):', sid)
+							if (!input) return
+							try {
+								const u = new URL(window.location.href)
+								u.searchParams.set('sid', input)
+								window.location.href = u.toString()
+							} catch {}
+						}}
+					>
+						수정
+					</button>
+				</div>
+				
 				<div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
 					<div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
 						<h3 style={{ margin: 0 }}>Participants</h3>

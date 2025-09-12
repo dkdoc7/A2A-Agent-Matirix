@@ -21,9 +21,10 @@ export const App: React.FC = () => {
 	const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
 	const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
 	const wsRef = useRef<WebSocket | null>(null)
-	const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+	const reconnectTimeoutRef = useRef<number | null>(null)
 	const reconnectAttemptsRef = useRef(0)
 	const maxReconnectAttempts = 5
+	const bcRef = useRef<BroadcastChannel | null>(null)
 
 	const loadAgents = useCallback(async () => {
 		try {
@@ -41,7 +42,8 @@ export const App: React.FC = () => {
 		setAgents((prev) => {
 			const existing = prev.find((a) => a.id === updatedAgent.id)
 			if (!existing) {
-				console.log('New agent added:', updatedAgent.id)
+				// 새로운 에이전트 추가 시에만 업데이트 시간 갱신
+				setLastUpdate(new Date())
 				return [...prev, updatedAgent]
 			}
 			
@@ -49,13 +51,13 @@ export const App: React.FC = () => {
 							  existing.last_seen_at !== updatedAgent.last_seen_at
 			
 			if (hasChanged) {
-				console.log('Agent status changed:', updatedAgent.id, existing.status, '->', updatedAgent.status)
+				// 상태가 실제로 바뀐 경우에만 업데이트 시간 갱신
+				setLastUpdate(new Date())
 				return prev.map((a) => (a.id === updatedAgent.id ? updatedAgent : a))
 			}
 			
 			return prev
 		})
-		setLastUpdate(new Date())
 	}, [])
 
 	const connectWebSocket = useCallback(() => {
@@ -63,7 +65,7 @@ export const App: React.FC = () => {
 			wsRef.current.close()
 		}
 
-		setWsStatus('connecting')
+		//setWsStatus('connecting')
 		const wsUrl = BACKEND_BASE.replace('http', 'ws') + '/ws'
 		const ws = new WebSocket(wsUrl)
 		wsRef.current = ws
@@ -72,19 +74,11 @@ export const App: React.FC = () => {
 			setWsStatus('connected')
 			reconnectAttemptsRef.current = 0
 			console.log('WebSocket connected successfully')
-			
-			// Keep-alive ping
-			const interval = setInterval(() => {
-				if (ws.readyState === WebSocket.OPEN) {
-					ws.send('ping')
-				}
-			}, 15000)
-			;(ws as any)._keepAlive = interval
 		}
 
 		ws.onmessage = (event) => {
 			try {
-				const msg: WebSocketMessage = JSON.parse(event.data)
+				const msg = JSON.parse(event.data)
 				console.log('WebSocket message received:', msg)
 				
 				if (msg.type === 'agent_status_changed') {
@@ -93,17 +87,26 @@ export const App: React.FC = () => {
 						updateAgent(msg.agent)
 					}
 				}
+				// 새 채팅 이벤트를 모든 스니프 창으로 전달
+				if (msg.type === 'chat_message') {
+					if (!bcRef.current) {
+						bcRef.current = new BroadcastChannel('agentmatrix-chat')
+					}
+					try {
+						bcRef.current.postMessage({ source: 'app', payload: msg })
+						console.log('Broadcasted chat_message via BroadcastChannel', msg)
+					} catch (e) {
+						console.error('Failed to broadcast chat_message', e)
+					}
+				}
 			} catch (e) {
 				console.error('Failed to parse WebSocket message:', e, 'Raw data:', event.data)
 			}
 		}
 
 		ws.onclose = (event) => {
-			setWsStatus('disconnected')
-			const interval = (ws as any)._keepAlive
-			if (interval) clearInterval(interval)
-			
 			console.log('WebSocket closed:', event.code, event.reason)
+			setWsStatus('disconnected')
 			
 			// Auto-reconnect with exponential backoff
 			if (reconnectAttemptsRef.current < maxReconnectAttempts) {
@@ -113,7 +116,7 @@ export const App: React.FC = () => {
 				if (reconnectTimeoutRef.current) {
 					clearTimeout(reconnectTimeoutRef.current)
 				}
-				reconnectTimeoutRef.current = setTimeout(() => {
+				reconnectTimeoutRef.current = window.setTimeout(() => {
 					console.log(`Reconnecting... Attempt ${reconnectAttemptsRef.current}`)
 					connectWebSocket()
 				}, delay)
@@ -131,6 +134,8 @@ export const App: React.FC = () => {
 
 	useEffect(() => {
 		loadAgents()
+		// BroadcastChannel 초기화
+		bcRef.current = new BroadcastChannel('agentmatrix-chat')
 		connectWebSocket()
 
 		return () => {
@@ -139,6 +144,10 @@ export const App: React.FC = () => {
 			}
 			if (reconnectTimeoutRef.current) {
 				clearTimeout(reconnectTimeoutRef.current)
+			}
+			if (bcRef.current) {
+				try { bcRef.current.close() } catch {}
+				bcRef.current = null
 			}
 		}
 	}, [loadAgents, connectWebSocket])
@@ -174,63 +183,65 @@ export const App: React.FC = () => {
 	const handleSniff = () => {
 		if (selectedIds.length < 2) return
 		const hostId = selectedIds[0]
-		const url = `${window.location.origin}/?sniff=1&agents=${encodeURIComponent(selectedIds.join(','))}&host=${encodeURIComponent(hostId)}`
+		const now = new Date()
+		const pad = (n: number, len = 2) => String(n).padStart(len, '0')
+		const sidTime = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}:${pad(now.getMilliseconds(),3)}`
+		const sid = encodeURIComponent(`${hostId}-${sidTime}`)
+		const url = `${window.location.origin}/?sniff=1&agents=${encodeURIComponent(selectedIds.join(','))}&host=${encodeURIComponent(hostId)}&sid=${sid}`
 		window.open(url, '_blank', 'noopener')
 	}
 
 	return (
 		<div style={{ padding: 24 }}>
-			<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+			<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
 				<h2>Agent Station</h2>
-				<div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-					<button 
-						onClick={handleRefresh}
-						style={{
-							padding: '8px 16px',
-							backgroundColor: '#1976d2',
-							color: 'white',
-							border: 'none',
-							borderRadius: '4px',
-							cursor: 'pointer'
-						}}
-					>
-						🔄 Refresh
-					</button>
-					<button 
-						onClick={handleSniff}
-						disabled={selectedIds.length < 2}
-						style={{
-							padding: '8px 16px',
-							backgroundColor: selectedIds.length < 2 ? '#90a4ae' : '#6a1b9a',
-							color: 'white',
-							border: 'none',
-							borderRadius: '4px',
-							cursor: selectedIds.length < 2 ? 'not-allowed' : 'pointer'
-						}}
-						title={selectedIds.length < 2 ? '두 명 이상 선택하세요' : '선택한 에이전트 스니핑'}
-					>
-						🕵️ Sniff ({selectedIds.length})
-					</button>
+				<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+					<div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+						<button 
+							onClick={handleRefresh}
+							style={{
+								padding: '8px 16px',
+								backgroundColor: '#1976d2',
+								color: 'white',
+								border: 'none',
+								borderRadius: '4px',
+								cursor: 'pointer'
+							}}
+						>
+							🔄 Refresh
+						</button>
+						<button 
+							onClick={handleSniff}
+							disabled={selectedIds.length < 2}
+							style={{
+								padding: '8px 16px',
+								backgroundColor: selectedIds.length < 2 ? '#90a4ae' : '#6a1b9a',
+								color: 'white',
+								border: 'none',
+								borderRadius: '4px',
+								cursor: selectedIds.length < 2 ? 'not-allowed' : 'pointer'
+							}}
+							title={selectedIds.length < 2 ? '두 명 이상 선택하세요' : '선택한 에이전트 스니핑'}
+						>
+							🕵️ Sniff ({selectedIds.length})
+						</button>
+					</div>
 					<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
 						<div style={{
 							width: '12px',
 							height: '12px',
 							borderRadius: '50%',
+							transition: 'background-color 200ms ease',
 							backgroundColor: wsStatus === 'connected' ? '#4caf50' : 
-											wsStatus === 'connecting' ? '#ff9800' : 
-											wsStatus === 'error' ? '#f44336' : '#9e9e9e'
+										wsStatus === 'connecting' ? '#ff9800' : 
+										wsStatus === 'error' ? '#f44336' : '#9e9e9e'
 						}} />
-						<span style={{ fontSize: '14px', color: '#666' }}>
-							{wsStatus === 'connected' ? 'Connected' : 
-							 wsStatus === 'connecting' ? 'Connecting...' : 
-							 wsStatus === 'error' ? 'Connection Error' : 'Disconnected'}
-						</span>
+						{lastUpdate && (
+							<span style={{ fontSize: '14px', color: '#666' }}>
+								· Last update: {lastUpdate.toLocaleTimeString()}
+							</span>
+						)}
 					</div>
-					{lastUpdate && (
-						<span style={{ fontSize: '14px', color: '#666' }}>
-							Last update: {lastUpdate.toLocaleTimeString()}
-						</span>
-					)}
 				</div>
 			</div>
 
@@ -290,31 +301,7 @@ export const App: React.FC = () => {
 				</div>
 			)}
 
-			{wsStatus === 'disconnected' && reconnectAttemptsRef.current < maxReconnectAttempts && (
-				<div style={{ 
-					textAlign: 'center', 
-					padding: '20px', 
-					color: '#ff9800',
-					backgroundColor: '#fff3e0',
-					borderRadius: '4px',
-					marginTop: '20px'
-				}}>
-					WebSocket disconnected. Reconnecting in {Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current - 1), 10000) / 1000} seconds... (Attempt {reconnectAttemptsRef.current}/{maxReconnectAttempts})
-				</div>
-			)}
 
-			{wsStatus === 'error' && (
-				<div style={{ 
-					textAlign: 'center', 
-					padding: '20px', 
-					color: '#f44336',
-					backgroundColor: '#ffebee',
-					borderRadius: '4px',
-					marginTop: '20px'
-				}}>
-					WebSocket connection error. Max reconnection attempts reached. Please refresh the page.
-				</div>
-			)}
 		</div>
 	)
 }

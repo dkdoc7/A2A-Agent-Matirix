@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+import aiosqlite
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator, field_serializer
 
 DATA_FILE = os.environ.get("AGENT_DATA_FILE", "data/agents.json")
 PING_INTERVAL_SECONDS = int(os.environ.get("PING_INTERVAL_SECONDS", "3"))
+CHAT_DB_FILE = os.environ.get("CHAT_DB_FILE", "data/chat.db")
 
 
 class AgentStatus:
@@ -31,6 +33,10 @@ class Agent(BaseModel):
         if value not in {AgentStatus.ACTIVE, AgentStatus.INACTIVE}:
             raise ValueError("Invalid status")
         return value
+    
+    @field_serializer("endpoint")
+    def serialize_endpoint(self, value: HttpUrl) -> str:
+        return str(value)
     
     def to_dict(self) -> dict:
         """JSON 직렬화 가능한 딕셔너리로 변환"""
@@ -194,11 +200,61 @@ app.add_middleware(
 
 manager = ConnectionManager()
 store = AgentStore(DATA_FILE)
+db_initialized = False
+
+
+class ChatMessage(BaseModel):
+    sid: str
+    sender: str
+    message: str
+    timestamp: str
+
+
+async def init_chat_db() -> None:
+    global db_initialized
+    if db_initialized:
+        return
+    os.makedirs(os.path.dirname(CHAT_DB_FILE), exist_ok=True)
+    async with aiosqlite.connect(CHAT_DB_FILE) as db:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sid TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                message TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )
+            """
+        )
+        await db.commit()
+    db_initialized = True
+
+async def save_chat_message(sid: str, sender: str, message: str, timestamp: str) -> None:
+    await init_chat_db()
+    async with aiosqlite.connect(CHAT_DB_FILE) as db:
+        await db.execute(
+            "INSERT INTO chat_messages (sid, sender, message, timestamp) VALUES (?, ?, ?, ?)",
+            (sid, sender, message, timestamp),
+        )
+        await db.commit()
+
+async def list_chat_messages(sid: str, limit: int = 100) -> List[Dict[str, str]]:
+    await init_chat_db()
+    async with aiosqlite.connect(CHAT_DB_FILE) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT sid, sender, message, timestamp FROM chat_messages WHERE sid = ? ORDER BY id DESC LIMIT ?",
+            (sid, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows][::-1]
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
     asyncio.create_task(ping_loop())
+    await init_chat_db()
 
 
 @app.get("/", response_model=DiscoveryInfo)
@@ -210,6 +266,7 @@ async def get_root_info() -> DiscoveryInfo:
             "list_agents": "/agents",
             "register_agent": "/agent",
             "ws": "/ws",
+            "chat": "/chat/{sid}/{sender}?msg=...",
         },
     )
 
@@ -219,11 +276,22 @@ async def list_agents(status: Optional[str] = Query(None, description="Filter by
     agents = await store.list_agents()
     if status in {AgentStatus.ACTIVE, AgentStatus.INACTIVE}:
         agents = [a for a in agents if a.status == status]
+        #프론트엔드로 chat 타입 메시지 전달
+        await manager.broadcast({
+            "type": "chat_message",
+            "sid": "a12345",
+            "sender": agents[0].id,
+            "message": f"반갑습니다! {agents[0].id} 입니다",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        print(f"chat_message: {agents}")
     return AgentListResponse(agents=agents)
 
 
 @app.post("/agent", response_model=Agent)
 async def register_agent(req: AgentRegisterRequest) -> Agent:
+    #req 를 로그로 출력
+    print(f"register_agent: {req}")
     agent = Agent(id=req.id, name=req.name, endpoint=req.endpoint, status=AgentStatus.INACTIVE)
     await store.upsert_agent(agent)
     
@@ -358,6 +426,40 @@ async def debug_connections():
         "connections": connections,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+
+
+
+@app.post("/chat/{sid}/{sender}")
+async def post_chat_message_sid_sender(
+    sid: str = Path(..., description="세션/방 ID"),
+    sender: str = Path(..., description="보낸 이 ID"),
+    msg: str = Query(..., description="메시지 텍스트"),
+):
+    """신규 채팅 API: /chat/{sid}/{sender}?msg=...
+
+    - sid 기준으로 DB 저장 및 브로드캐스트
+    - 프론트는 sid가 일치하는 방만 메시지를 표시
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    await save_chat_message(sid, sender, msg, ts)
+    payload = {
+        "type": "chat_message",
+        "sid": sid,
+        "sender": sender,
+        "message": msg,
+        "timestamp": ts,
+    }
+    await manager.broadcast(payload)
+    return {"ok": True}
+
+@app.get("/chat/{sid}")
+async def get_chat_messages(
+    sid: str = Path(..., description="세션/방 ID"),
+    limit: int = Query(200, ge=1, le=1000, description="최대 메시지 수"),
+):
+    messages = await list_chat_messages(sid, limit)
+    return {"sid": sid, "messages": messages}
 
 
 async def ping_loop() -> None:

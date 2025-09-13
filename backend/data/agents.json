@@ -1,18 +1,18 @@
 {
   "agents": [
     {
-      "id": "test-agent",
-      "name": "Test Agent",
-      "endpoint": "http://localhost:5000/",
-      "status": "inactive",
-      "last_seen_at": null
-    },
-    {
       "id": "text-analyzer",
       "name": "Text Analyzer",
       "endpoint": "http://0.0.0.0:5005/",
       "status": "active",
-      "last_seen_at": "2025-08-31T14:04:20.328722+00:00"
+      "last_seen_at": "2025-09-12T05:48:46.737730+00:00"
+    },
+    {
+      "id": "master",
+      "name": "Master",
+      "endpoint": "http://0.0.0.0:5001/",
+      "status": "active",
+      "last_seen_at": "2025-09-12T05:48:58.758473+00:00"
     }
   ]
 }
